@@ -1,5 +1,8 @@
 package main
 
+import "core:mem"
+import "core:crypto/_fiat/field_curve448"
+import "base:intrinsics"
 import "core:math/rand"
 import "core:c"
 import "core:log"
@@ -35,12 +38,13 @@ ivec_to_vec :: proc(vec: IVec3) -> (out: rl.Vector3) {
 
 World :: struct {
 	voxels: map[IVec3]struct{}, // hash set
-	mesh: ^rl.Mesh
+	model: rl.Model
 }
 
 
 main :: proc() {
 	context.logger = log.create_console_logger()
+	defer log.destroy_console_logger(context.logger)
 	rl.InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Cube!")
 	defer rl.CloseWindow()
 	rl.SetTargetFPS(TARGET_FPS)
@@ -66,15 +70,18 @@ main :: proc() {
 		if rl.IsKeyPressed(rl.KeyboardKey.SPACE) {
 			keys := collect_keys(world.voxels)
 			delete_key(&world.voxels, rand.choice(keys[:]))
+			world.model = rl.Model{}
 		}
 		// render
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.Color{60, 0, 20, 255}) // (60, 0, 8)
 		/*BEGIN 3D*/ rl.BeginMode3D(camera)
-		if (world.mesh == nil) {
+		if (world.model == rl.Model{}) { // default
 			create_mesh(&world)
 		}
-		rl.DrawMesh(world.mesh^, rl.LoadMaterialDefault(), rl.Matrix{})
+		rl.DrawModel(world.model, rl.Vector3(0), 1.0, rl.WHITE)
+		// seg fault here \/
+		//rl.DrawMesh(world.mesh^, rl.LoadMaterialDefault(), rl.Matrix(1))
 		//draw_mesh(world.mesh)
 		//for vox in world.voxels {
 		//	draw_cube_colored(ivec_to_vec(vox), CUBE_COLORS)
@@ -86,20 +93,43 @@ main :: proc() {
 
 create_mesh :: proc(world: ^World) {
 	mesh := rl.Mesh{}
-	mesh.vertexCount = c.int(36 * len(world.voxels))
+	mesh.vertexCount = c.int(24 * len(world.voxels))
 	mesh.triangleCount = c.int(12 * len(world.voxels))
 	//mesh.vertices = cast([^]f32) rl.MemAlloc(c.uint(mesh.vertexCount * 3 * size_of(f32)))
 	//mesh.normals = cast([^]f32) rl.MemAlloc(c.uint(mesh.vertexCount * 3 * size_of(f32)))
 	//mesh.colors = cast([^]u8) rl.MemAlloc(c.uint(mesh.vertexCount * 4 * size_of(u8)))
-	vertices := make([dynamic]f32, mesh.vertexCount * 3)
-	normals := make([dynamic]f32, mesh.vertexCount * 3)
-	colors := make([dynamic]u8, mesh.vertexCount * 4)
+	vertices := make([dynamic]f32, 0, mesh.vertexCount * 3)
+	normals := make([dynamic]f32, 0, mesh.vertexCount * 3)
+	colors := make([dynamic]u8, 0, mesh.vertexCount * 4)
+	indices := make([dynamic]u16, 0, mesh.triangleCount * 3)
+	defer delete(vertices)
+	defer delete(normals)
+	defer delete(colors)
+	defer delete(indices)
 	i := 0
 	for vox in world.voxels {
-		gen_cube_vertices(vertices[i*36:], normals[i*36:], colors[i*36:], ivec_to_vec(vox), CUBE_COLORS)
+		gen_cube_vertices(
+			&vertices, &normals, &colors, &indices,
+		 	ivec_to_vec(vox), CUBE_COLORS, i
+		)
 		i += 1
 	}
+	mesh.vertices = cast([^]f32) rl.MemAlloc(u32(len(vertices) * size_of(f32)))
+	mesh.normals = cast([^]f32) rl.MemAlloc(u32(len(normals) * size_of(f32)))
+	mesh.colors = cast([^]u8) rl.MemAlloc(u32(len(colors) * size_of(u8)))
+	mesh.indices = cast([^]u16) rl.MemAlloc(u32(len(indices) * size_of(u16)))
 
+	mem.copy(mesh.vertices, raw_data(vertices), len(vertices) * size_of(f32))
+	mem.copy(mesh.normals, raw_data(normals), len(normals) * size_of(f32))
+	mem.copy(mesh.colors, raw_data(colors), len(colors) * size_of(u8))
+	mem.copy(mesh.indices, raw_data(indices), len(indices) * size_of(u16))
+	//mesh.vertices = raw_data(vertices)
+	//mesh.normals = raw_data(normals)
+	//mesh.colors = raw_data(colors)
+	//mesh.indices = raw_data(indices)
+	rl.UploadMesh(&mesh, false)
+
+	world.model = rl.LoadModelFromMesh(mesh)
 }
 
 
@@ -109,7 +139,7 @@ draw_cube :: proc(position: rl.Vector3) {
 }
 
 
-gen_cube_vertices :: proc(vert_buf: ^[dynamic]f32, norm_buf: ^[dynamic]f32, color_buf: ^[dynamic]u8, position: rl.Vector3, colors: [6]rl.Color, w: f32 = 1, h: f32 = 1, l: f32 = 1) {
+gen_cube_vertices :: proc(vert_buf: ^[dynamic]f32, norm_buf: ^[dynamic]f32, color_buf: ^[dynamic]u8, ind_buf: ^[dynamic]u16, position: rl.Vector3, colors: [6]rl.Color, offset: int, w: f32 = 1, h: f32 = 1, l: f32 = 1) {
 	w2 := w / 2
 	h2 := h / 2
 	l2 := l / 2
@@ -118,11 +148,17 @@ gen_cube_vertices :: proc(vert_buf: ^[dynamic]f32, norm_buf: ^[dynamic]f32, colo
 		append(color_buf, colors[0].r, colors[0].g, colors[0].b, colors[0].a)
 		append(norm_buf, 0, 0, 1)
 	}
+	// add indices [n, n+1, n+2, n, n+2, n+3]
+	ind := u16(len(vert_buf) / 3)
+	append(ind_buf,
+		ind, ind+1, ind+2,
+		ind, ind+2, ind+3,
+	)
 	append(vert_buf,
-	 	position.x - w2, position.y - h2, position.z + l2, //bottom-left
-		position.x + w2, position.y - h2, position.z + l2, //bottom-right
-		position.x + w2, position.y + h2, position.z + l2, //top-right
-		position.x - w2, position.y + h2, position.z + l2, //top-left
+	 	position.x - w2, position.y - h2, position.z + l2, //bottom-left 0
+		position.x + w2, position.y - h2, position.z + l2, //bottom-right 1
+		position.x + w2, position.y + h2, position.z + l2, //top-right 2
+		position.x - w2, position.y + h2, position.z + l2, //top-left 3
 	)
 	/*rlgl.Color4ub(colors[0].r, colors[0].g, colors[0].b, colors[0].a)
 	rlgl.Normal3f(0, 0, 1) // face towards 'us'
@@ -130,40 +166,119 @@ gen_cube_vertices :: proc(vert_buf: ^[dynamic]f32, norm_buf: ^[dynamic]f32, colo
 	rlgl.Vertex3f(position.x + w2, position.y - h2, position.z + l2) // bottom-right
 	rlgl.Vertex3f(position.x + w2, position.y + h2, position.z + l2) // top-right
 	rlgl.Vertex3f(position.x - w2, position.y + h2, position.z + l2) // top-left*/
-	/*
 	//back
+	for _ in 0..<4 { // 4 vertices per side
+		append(color_buf, colors[1].r, colors[1].g, colors[1].b, colors[1].a)
+		append(norm_buf, 0, 0, -1)
+	}
+	ind = u16(len(vert_buf) / 3)
+	append(ind_buf,
+		ind, ind+1, ind+2,
+		ind, ind+2, ind+3,
+	)
+	append(vert_buf,
+		position.x - w2, position.y - h2, position.z - l2, // bottom-right
+		position.x - w2, position.y + h2, position.z - l2, // top-right
+		position.x + w2, position.y + h2, position.z - l2, // top-left
+		position.x + w2, position.y - h2, position.z - l2, // bottom-left
+	)
+	/*
 	rlgl.Color4ub(colors[1].r, colors[1].g, colors[1].b, colors[1].a)
 	rlgl.Normal3f(0,0,-1) // face away
 	rlgl.Vertex3f(position.x - w2, position.y - h2, position.z - l2) // bottom-right
 	rlgl.Vertex3f(position.x - w2, position.y + h2, position.z - l2) // top-right
 	rlgl.Vertex3f(position.x + w2, position.y + h2, position.z - l2) // top-left
-	rlgl.Vertex3f(position.x + w2, position.y - h2, position.z - l2) // bottom-left
+	rlgl.Vertex3f(position.x + w2, position.y - h2, position.z - l2) // bottom-left*/
 
 	//top
+	for _ in 0..<4 { // 4 vertices per side
+		append(color_buf, colors[2].r, colors[2].g, colors[2].b, colors[2].a)
+		append(norm_buf, 0, 1, 0)
+	}
+	ind = u16(len(vert_buf) / 3)
+	append(ind_buf,
+		ind, ind+1, ind+2,
+		ind, ind+2, ind+3,
+	)
+	append(vert_buf,
+		position.x - w2, position.y + h2, position.z - l2, // top-left
+		position.x - w2, position.y + h2, position.z + l2, // bottom-left
+		position.x + w2, position.y + h2, position.z + l2, // bottm-right
+		position.x + w2, position.y + h2, position.z - l2, // top-right
+	)
+	/*
 	rlgl.Color4ub(colors[2].r, colors[2].g, colors[2].b, colors[2].a)
 	rlgl.Normal3f(0,1,0) // face up
 	rlgl.Vertex3f(position.x - w2, position.y + h2, position.z - l2) // top-left
 	rlgl.Vertex3f(position.x - w2, position.y + h2, position.z + l2) // bottom-left
 	rlgl.Vertex3f(position.x + w2, position.y + h2, position.z + l2) // bottom-right
-	rlgl.Vertex3f(position.x + w2, position.y + h2, position.z - l2) // top-right
+	rlgl.Vertex3f(position.x + w2, position.y + h2, position.z - l2) // top-right*/
 
 	//bottom
+	for _ in 0..<4 { // 4 vertices per side
+		append(color_buf, colors[3].r, colors[3].g, colors[3].b, colors[3].a)
+		append(norm_buf, 0, -1, 0)
+	}
+	ind = u16(len(vert_buf) / 3)
+	append(ind_buf,
+		ind, ind+1, ind+2,
+		ind, ind+2, ind+3,
+	)
+	append(vert_buf,
+		position.x - w2, position.y - h2, position.z - l2, // top-right
+		position.x + w2, position.y - h2, position.z - l2, // top-left
+		position.x + w2, position.y - h2, position.z + l2, // bottom-left
+		position.x - w2, position.y - h2, position.z + l2, // bottom-right
+	)
+	/*
 	rlgl.Color4ub(colors[3].r, colors[3].g, colors[3].b, colors[3].a)
 	rlgl.Normal3f(0,-1,0) // face down
 	rlgl.Vertex3f(position.x - w2, position.y - h2, position.z - l2) // top-right
 	rlgl.Vertex3f(position.x + w2, position.y - h2, position.z - l2) // top-left
 	rlgl.Vertex3f(position.x + w2, position.y - h2, position.z + l2) // bottom-left
-	rlgl.Vertex3f(position.x - w2, position.y - h2, position.z + l2) // bottom-right
+	rlgl.Vertex3f(position.x - w2, position.y - h2, position.z + l2) // bottom-right*/
 
 	//right
+	for _ in 0..<4 { // 4 vertices per side
+		append(color_buf, colors[4].r, colors[4].g, colors[4].b, colors[4].a)
+		append(norm_buf, 1, 0, 0)
+	}
+	ind = u16(len(vert_buf) / 3)
+	append(ind_buf,
+		ind, ind+1, ind+2,
+		ind, ind+2, ind+3,
+	)
+	append(vert_buf,
+		position.x + w2, position.y - h2, position.z - l2, // bottom-right
+		position.x + w2, position.y + h2, position.z - l2, // top-right
+		position.x + w2, position.y + h2, position.z + l2, // top-left
+		position.x + w2, position.y - h2, position.z + l2, // bottom-left
+	)
+	/*
 	rlgl.Color4ub(colors[4].r, colors[4].g, colors[4].b, colors[4].a)
 	rlgl.Normal3f(1,0,0) // face right
 	rlgl.Vertex3f(position.x + w2, position.y - h2, position.z - l2) // bottom-right
 	rlgl.Vertex3f(position.x + w2, position.y + h2, position.z - l2) // top-right
 	rlgl.Vertex3f(position.x + w2, position.y + h2, position.z + l2) // top-left
-	rlgl.Vertex3f(position.x + w2, position.y - h2, position.z + l2) // bottom-left
+	rlgl.Vertex3f(position.x + w2, position.y - h2, position.z + l2) // bottom-left*/
 
 	//left
+	for _ in 0..<4 { // 4 vertices per side
+		append(color_buf, colors[5].r, colors[5].g, colors[5].b, colors[5].a)
+		append(norm_buf, -1, 0, 0)
+	}
+	ind = u16(len(vert_buf) / 3)
+	append(ind_buf,
+		ind, ind+1, ind+2,
+		ind, ind+2, ind+3,
+	)
+	append(vert_buf,
+		position.x - w2, position.y - h2, position.z - l2, // bottom-left
+		position.x - w2, position.y - h2, position.z + l2, // bottom-right
+		position.x - w2, position.y + h2, position.z + l2, // top-right
+		position.x - w2, position.y + h2, position.z - l2, // top-left
+	)
+	/*
 	rlgl.Color4ub(colors[5].r, colors[5].g, colors[5].b, colors[5].a)
 	rlgl.Normal3f(-1,0,0) // face left
 	rlgl.Vertex3f(position.x - w2, position.y - h2, position.z - l2) // bottom-left
