@@ -1,6 +1,7 @@
 #+feature dynamic-literals
 package main
 
+import "core:math/linalg"
 import "core:mem"
 import "core:math"
 import "core:math/rand"
@@ -63,6 +64,13 @@ VoxelKind :: enum {
 	Stone,
 }
 
+RenderBuffers :: struct {
+	vertices: [dynamic]f32,
+	normals: [dynamic]f32,
+	colors: [dynamic]u8,
+	indices: [dynamic]u16,
+}
+
 main :: proc() {
 	context.logger = log.create_console_logger()
 	defer log.destroy_console_logger(context.logger)
@@ -71,8 +79,8 @@ main :: proc() {
 	rl.SetTargetFPS(TARGET_FPS)
 
 	camera := rl.Camera3D{
-		position = rl.Vector3{25, 10, 25},
-		target = rl.Vector3{0, 0, 0},
+		position = rl.Vector3{0, 2, 10},
+		target = rl.Vector3{0, 2, 0},
 		up = rl.Vector3{0, 1, 0},
 		fovy = 60,
 		projection = rl.CameraProjection.PERSPECTIVE,
@@ -102,6 +110,7 @@ main :: proc() {
 		VoxelKind.Stone = CUBE_COLORS_STONE,
 	}
 
+	rl.DisableCursor()
 	for !rl.WindowShouldClose() {
 		// game updates
 		if rl.IsKeyDown(rl.KeyboardKey.SPACE) { // was `pressed` for once-action
@@ -113,12 +122,13 @@ main :: proc() {
 			desired_pos := chunk_to_world_coord(desired_chunk, desired_vox)
 			set_voxel(&world, desired_pos, VoxelKind.Stone) // evicts mesh
 		}
+		rl.UpdateCamera(&camera, rl.CameraMode.FREE)
 		// render
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.Color{60, 0, 40, 255}) // (60, 0, 8)
 		/*BEGIN 3D*/ rl.BeginMode3D(camera)
 		// render around camera
-		camera_chunk, _ := world_to_chunk_coord(vec_to_ivec(camera.position))
+		camera_chunk, _ := world_to_chunk_coord(vec_to_ivec(camera.target))
 		for y in -CHUNK_GENERATION_RADIUS..<CHUNK_GENERATION_RADIUS {
 			for z in -CHUNK_GENERATION_RADIUS..<CHUNK_GENERATION_RADIUS {
 				for x in -CHUNK_GENERATION_RADIUS..<CHUNK_GENERATION_RADIUS {
@@ -169,46 +179,59 @@ get_or_create_chunk :: proc(world: ^World, chunk_position: IVec3) -> (chunk: ^Ch
 }
 
 create_mesh :: proc(chunk: ^Chunk, color_map: map[VoxelKind][6]rl.Color) {
+	neighbors := []rl.Vector3{
+		rl.Vector3{1, 0, 0}, // Right
+		rl.Vector3{-1, 0, 0}, // Left
+		rl.Vector3{0, 1, 0}, // Up
+		rl.Vector3{0, -1, 0}, // Down
+		rl.Vector3{0, 0, 1}, // Forward
+		rl.Vector3{0, 0, -1}, // Backward
+	}
 	mesh := rl.Mesh{}
-	mesh.vertexCount = c.int(24 * len(chunk.voxels))
-	mesh.triangleCount = c.int(12 * len(chunk.voxels))
-	//mesh.vertices = cast([^]f32) rl.MemAlloc(c.uint(mesh.vertexCount * 3 * size_of(f32)))
-	//mesh.normals = cast([^]f32) rl.MemAlloc(c.uint(mesh.vertexCount * 3 * size_of(f32)))
-	//mesh.colors = cast([^]u8) rl.MemAlloc(c.uint(mesh.vertexCount * 4 * size_of(u8)))
-	vertices := make([dynamic]f32, 0, mesh.vertexCount * 3)
-	normals := make([dynamic]f32, 0, mesh.vertexCount * 3)
-	colors := make([dynamic]u8, 0, mesh.vertexCount * 4)
-	indices := make([dynamic]u16, 0, mesh.triangleCount * 3)
-	defer delete(vertices)
-	defer delete(normals)
-	defer delete(colors)
-	defer delete(indices)
-	i := 0
+	vertices := make([dynamic]f32)
+	normals := make([dynamic]f32)
+	colors := make([dynamic]u8)
+	indices := make([dynamic]u16)
+	buffers := RenderBuffers{vertices, normals, colors, indices}
+	defer delete(buffers.vertices)
+	defer delete(buffers.normals)
+	defer delete(buffers.colors)
+	defer delete(buffers.indices)
+	//i := 0
 	for vox, kind in chunk.voxels {
 		c, ok := color_map[kind]
 		if !ok {
 			log.warnf("voxel kind '%v' has no color map", kind)
 			c = CUBE_COLORS_UNKNOWN
 		}
-		gen_cube_vertices(
-			&vertices, &normals, &colors, &indices,
-		 	ivec_to_vec(vox), c, i
-		)
-		i += 1
+		i := 0
+		for offset in neighbors {
+			of_iv := vec_to_ivec(offset)
+			neighbor_pos := IVec3{vox.x + of_iv.x, vox.y + of_iv.y, vox.z + of_iv.z}
+			_, present := chunk.voxels[neighbor_pos]
+			if present { // face is blocked
+				continue
+			}
+			gen_quad_vertices(
+				&buffers,
+			 	ivec_to_vec(vox),
+				offset,
+				c[i],
+			)
+			i += 1
+		}
 	}
-	mesh.vertices = cast([^]f32) rl.MemAlloc(u32(len(vertices) * size_of(f32)))
-	mesh.normals = cast([^]f32) rl.MemAlloc(u32(len(normals) * size_of(f32)))
-	mesh.colors = cast([^]u8) rl.MemAlloc(u32(len(colors) * size_of(u8)))
-	mesh.indices = cast([^]u16) rl.MemAlloc(u32(len(indices) * size_of(u16)))
+	mesh.vertices = cast([^]f32) rl.MemAlloc(u32(len(buffers.vertices) * size_of(f32)))
+	mesh.normals = cast([^]f32) rl.MemAlloc(u32(len(buffers.normals) * size_of(f32)))
+	mesh.colors = cast([^]u8) rl.MemAlloc(u32(len(buffers.colors) * size_of(u8)))
+	mesh.indices = cast([^]u16) rl.MemAlloc(u32(len(buffers.indices) * size_of(u16)))
+	mesh.vertexCount = i32(len(buffers.vertices) / 3)
+	mesh.triangleCount = i32(len(buffers.indices) / 3)
 
-	mem.copy(mesh.vertices, raw_data(vertices), len(vertices) * size_of(f32))
-	mem.copy(mesh.normals, raw_data(normals), len(normals) * size_of(f32))
-	mem.copy(mesh.colors, raw_data(colors), len(colors) * size_of(u8))
-	mem.copy(mesh.indices, raw_data(indices), len(indices) * size_of(u16))
-	//mesh.vertices = raw_data(vertices)
-	//mesh.normals = raw_data(normals)
-	//mesh.colors = raw_data(colors)
-	//mesh.indices = raw_data(indices)
+	mem.copy(mesh.vertices, raw_data(buffers.vertices), len(buffers.vertices) * size_of(f32))
+	mem.copy(mesh.normals, raw_data(buffers.normals), len(buffers.normals) * size_of(f32))
+	mem.copy(mesh.colors, raw_data(buffers.colors), len(buffers.colors) * size_of(u8))
+	mem.copy(mesh.indices, raw_data(buffers.indices), len(buffers.indices) * size_of(u16))
 	rl.UploadMesh(&mesh, false)
 	chunk.model = rl.LoadModelFromMesh(mesh)
 }
@@ -216,7 +239,6 @@ create_mesh :: proc(chunk: ^Chunk, color_map: map[VoxelKind][6]rl.Color) {
 free_model :: proc(model: ^rl.Model) {
 	rl.UnloadModel(model^)
 }
-
 
 set_voxel :: proc(world: ^World, position: IVec3, kind: Maybe(VoxelKind)) {
 	// convert to chunk coords
@@ -240,6 +262,31 @@ draw_cube :: proc(position: rl.Vector3) {
 	rl.DrawCube(position, 1.0, 1.0, 1.0, rl.WHITE)
 }
 
+gen_quad_vertices :: proc(render_buffers: ^RenderBuffers, position: rl.Vector3, direction: rl.Vector3, color: rl.Color) {
+	for _ in 0..<4 {
+		append(&render_buffers.colors, color.r, color.g, color.b, color.a)
+		append(&render_buffers.normals, f32(direction.x), f32(direction.y), f32(direction.z))
+	}
+	// indices
+	ind := u16(len(render_buffers.vertices)/3)
+	append(&render_buffers.indices, ind, ind+1, ind+2, ind, ind+2, ind+3)
+	nml := linalg.normalize(direction)
+	ref := rl.Vector3{0,1,0}
+	if abs(nml.x) < abs(nml.y) {
+		ref = rl.Vector3{1,0,0}
+	}
+	r := linalg.normalize(linalg.cross(nml, ref)) * 0.5
+	u := linalg.normalize(linalg.cross(nml, r)) * 0.5
+	center := position + nml * 0.5 // center of quad face
+	p1 := center - r - u
+	append(&render_buffers.vertices, p1.x, p1.y, p1.z)
+	p2 := center + r - u
+	append(&render_buffers.vertices, p2.x, p2.y, p2.z)
+	p3 := center + r + u
+	append(&render_buffers.vertices, p3.x, p3.y, p3.z)
+	p4 := center - r + u
+	append(&render_buffers.vertices, p4.x, p4.y, p4.z)
+}
 
 gen_cube_vertices :: proc(vert_buf: ^[dynamic]f32, norm_buf: ^[dynamic]f32, color_buf: ^[dynamic]u8, ind_buf: ^[dynamic]u16, position: rl.Vector3, colors: [6]rl.Color, offset: int, w: f32 = 1, h: f32 = 1, l: f32 = 1) {
 	w2 := w / 2
