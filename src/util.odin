@@ -22,8 +22,8 @@ world_to_chunk_coord :: proc(world_pos: IVec3) -> (chunk_pos: IVec3, chunk_local
 	// https://odin-lang.org/docs/overview/#integer-operators
 	// according to this section, integer operations in odin respect
 	// euclidian operations (div/rem)
-	chunk_pos = IVec3{x = math.floor_div(world_pos.x, CHUNK_SIZE), y = math.floor_div(world_pos.y, CHUNK_SIZE), z = math.floor_div(world_pos.z, CHUNK_SIZE)}
-	chunk_local_pos = IVec3{x = world_pos.x %% CHUNK_SIZE, y = world_pos.y %% CHUNK_SIZE, z = world_pos.z %% CHUNK_SIZE}
+	chunk_pos = IVec3{math.floor_div(world_pos.x, CHUNK_SIZE), math.floor_div(world_pos.y, CHUNK_SIZE), math.floor_div(world_pos.z, CHUNK_SIZE)}
+	chunk_local_pos = IVec3{world_pos.x %% CHUNK_SIZE, world_pos.y %% CHUNK_SIZE, world_pos.z %% CHUNK_SIZE}
 	return
 }
 

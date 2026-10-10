@@ -1,6 +1,8 @@
 #+feature dynamic-literals
 package main
 
+import "core:strings"
+import "core:fmt"
 import "core:math/linalg"
 import "core:mem"
 import "core:math"
@@ -44,11 +46,12 @@ CUBE_COLORS_UNKNOWN : [6]rl.Color : {
 }
 
 CHUNK_SIZE :: 32 // N x N x N chunk
-CHUNK_GENERATION_RADIUS :: 4
+CHUNK_GENERATION_RADIUS :: 3
 
-IVec3 :: struct { // discrete vec3
-	x, y, z: int
-}
+//IVec3 :: struct { // discrete vec3
+//	x, y, z: int
+//}
+IVec3 :: [3]int
 
 World :: struct {
 	chunks: map[IVec3]Chunk,
@@ -113,30 +116,31 @@ main :: proc() {
 	rl.DisableCursor()
 	for !rl.WindowShouldClose() {
 		// game updates
-		if rl.IsKeyDown(rl.KeyboardKey.SPACE) { // was `pressed` for once-action
-			//keys := collect_keys(world.voxels)
-			chunks := collect_keys(world.chunks)
-			desired_chunk := rand.choice(chunks[:])
-			voxels := collect_keys(world.chunks[desired_chunk].voxels)
-			desired_vox := rand.choice(voxels[:])
-			desired_pos := chunk_to_world_coord(desired_chunk, desired_vox)
-			set_voxel(&world, desired_pos, VoxelKind.Stone) // evicts mesh
-		}
 		rl.UpdateCamera(&camera, rl.CameraMode.FREE)
+		target, face, ray_ok := raycast_voxel(&world, camera.position, linalg.normalize(camera.target - camera.position), 3)
+		if rl.IsMouseButtonPressed(rl.MouseButton.LEFT) { // was `pressed` for once-action
+			if ray_ok {
+				set_voxel(&world, IVec3(target), nil)
+			}
+		} else if rl.IsMouseButtonPressed(rl.MouseButton.RIGHT) {
+			if ray_ok {
+				set_voxel(&world, IVec3(rl.Vector3(target)+face), VoxelKind.Stone)
+			}
+		}
 		// render
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.Color{60, 0, 40, 255}) // (60, 0, 8)
 		/*BEGIN 3D*/ rl.BeginMode3D(camera)
 		// render around camera
-		camera_chunk, _ := world_to_chunk_coord(vec_to_ivec(camera.target))
+		camera_chunk, _ := world_to_chunk_coord(vec_to_ivec(camera.position))
 		for y in -CHUNK_GENERATION_RADIUS..<CHUNK_GENERATION_RADIUS {
 			for z in -CHUNK_GENERATION_RADIUS..<CHUNK_GENERATION_RADIUS {
 				for x in -CHUNK_GENERATION_RADIUS..<CHUNK_GENERATION_RADIUS {
 					//c_offset := IVec3{x,y,z}
-					c_pos := IVec3{x = camera_chunk.x + x, y = camera_chunk.y + y, z = camera_chunk.z + z}
+					c_pos := IVec3{camera_chunk.x + x, camera_chunk.y + y, camera_chunk.z + z}
 					chunk := get_or_create_chunk(&world, c_pos)
 
-					offset := ivec_to_vec(IVec3{x = c_pos.x * CHUNK_SIZE, y = c_pos.y * CHUNK_SIZE, z = c_pos.z * CHUNK_SIZE})
+					offset := ivec_to_vec(IVec3{c_pos.x * CHUNK_SIZE, c_pos.y * CHUNK_SIZE, c_pos.z * CHUNK_SIZE})
 					if chunk.model == nil {
 						create_mesh(chunk, color_map)
 					}
@@ -144,9 +148,14 @@ main :: proc() {
 				}
 			}
 		}
+		if ray_ok {
+			rl.DrawCube(ivec_to_vec(target), 1, 1, 1, rl.Color{255, 255, 255, 10})
+			rl.DrawLine3D(rl.Vector3(target), rl.Vector3(target) + face, rl.GREEN)
+		}
 
 		/*END   3D*/ rl.EndMode3D()
 		rl.DrawFPS(10, 10)
+		rl.DrawText(strings.clone_to_cstring(fmt.tprintf("%v, %v", target, face)), 550, 20, 15, rl.WHITE)
 		rl.EndDrawing()
 	}
 }
@@ -162,9 +171,9 @@ get_or_create_chunk :: proc(world: ^World, chunk_position: IVec3) -> (chunk: ^Ch
 		for y in 0..<32 {
 			for x in 0..<32 {
 				world_pos := IVec3{
-					x = chunk_position.x*CHUNK_SIZE + x,
-				 	y = chunk_position.y*CHUNK_SIZE + y,
-					z = chunk_position.z*CHUNK_SIZE + z,
+					chunk_position.x*CHUNK_SIZE + x,
+				 	chunk_position.y*CHUNK_SIZE + y,
+					chunk_position.z*CHUNK_SIZE + z,
 				}
 
 				if world_pos.y == 0 {
@@ -206,9 +215,8 @@ create_mesh :: proc(chunk: ^Chunk, color_map: map[VoxelKind][6]rl.Color) {
 		}
 		i := 0
 		for offset in neighbors {
-			of_iv := vec_to_ivec(offset)
-			neighbor_pos := IVec3{vox.x + of_iv.x, vox.y + of_iv.y, vox.z + of_iv.z}
-			_, present := chunk.voxels[neighbor_pos]
+			neighbor := vox + IVec3(offset)
+			_, present := chunk.voxels[neighbor]
 			if present { // face is blocked
 				continue
 			}
@@ -240,6 +248,18 @@ free_model :: proc(model: ^rl.Model) {
 	rl.UnloadModel(model^)
 }
 
+get_voxel :: proc(world: ^World, position: IVec3) -> Maybe(VoxelKind) {
+	// convert to chunk coords
+	chunk_pos, chunk_local_pos := world_to_chunk_coord(position)
+	//chunk := &world.chunks[chunk_pos]
+	chunk := get_or_create_chunk(world, chunk_pos)
+	val, ok := chunk.voxels[chunk_local_pos]
+	if ok {
+		return val
+	}
+	return nil
+}
+
 set_voxel :: proc(world: ^World, position: IVec3, kind: Maybe(VoxelKind)) {
 	// convert to chunk coords
 	chunk_pos, chunk_local_pos := world_to_chunk_coord(position)
@@ -248,7 +268,7 @@ set_voxel :: proc(world: ^World, position: IVec3, kind: Maybe(VoxelKind)) {
 	if mod, ok := &chunk.model.?; ok {
 		free_model(mod)
 	}
-	chunk.model = nil
+	chunk.model = nil // this should be optimized to not be unconditional
 	k, ok := kind.?
 	if !ok {
 		delete_key(&chunk.voxels, chunk_local_pos) // no-op if the key doesn't exist

@@ -25,7 +25,6 @@ test_world_to_local_pos :: proc(t: ^testing.T) {
 		}
 	}
 	for c in cases {
-
 		chunk_pos, chunk_local_pos := m.world_to_chunk_coord(c.world_pos)
 		testing.expect_value(t, chunk_pos, c.expected_chunk_pos)
 		testing.expect_value(t, chunk_local_pos, c.expected_chunk_local_pos)
