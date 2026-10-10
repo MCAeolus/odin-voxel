@@ -1,6 +1,8 @@
+#+feature dynamic-literals
 package main
 
 import "core:mem"
+import "core:math"
 import "core:math/rand"
 import "core:c"
 import "core:log"
@@ -13,7 +15,25 @@ WINDOW_HEIGHT : c.int : 600
 
 TARGET_FPS :: 60
 
-CUBE_COLORS : [6]rl.Color : {
+CUBE_COLORS_DIRT : [6]rl.Color : {
+	rl.Color{160, 42, 42, 255},
+	rl.Color{160, 42, 42, 255},
+	rl.Color{160, 42, 42, 255},
+	rl.Color{160, 42, 42, 255},
+	rl.Color{160, 42, 42, 255},
+	rl.Color{160, 42, 42, 255},
+}
+
+CUBE_COLORS_STONE : [6]rl.Color : {
+	rl.Color{128, 128, 128, 255},
+	rl.Color{128, 128, 128, 255},
+	rl.Color{128, 128, 128, 255},
+	rl.Color{128, 128, 128, 255},
+	rl.Color{128, 128, 128, 255},
+	rl.Color{128, 128, 128, 255},
+}
+
+CUBE_COLORS_UNKNOWN : [6]rl.Color : {
 	rl.Color{100, 200, 200, 255},
 	rl.Color{200, 100, 200, 255},
 	rl.Color{200, 200, 100, 255},
@@ -23,16 +43,10 @@ CUBE_COLORS : [6]rl.Color : {
 }
 
 CHUNK_SIZE :: 32 // N x N x N chunk
+CHUNK_GENERATION_RADIUS :: 4
 
 IVec3 :: struct { // discrete vec3
 	x, y, z: int
-}
-
-ivec_to_vec :: proc(vec: IVec3) -> (out: rl.Vector3) {
-	out.x = f32(vec.x)
-	out.y = f32(vec.y)
-	out.z = f32(vec.z)
-	return
 }
 
 World :: struct {
@@ -40,8 +54,13 @@ World :: struct {
 }
 
 Chunk :: struct {
-	voxels: map[IVec3]struct{},
+	voxels: map[IVec3]VoxelKind, // absence is 'air'
 	model: Maybe(rl.Model),
+}
+
+VoxelKind :: enum {
+	Dirt,
+	Stone,
 }
 
 main :: proc() {
@@ -60,37 +79,64 @@ main :: proc() {
 	}
 
 	world := World{}
-	// populate World
-	for z in 0..<32 {
-		for x in 0..<32 {
-			flip_voxel(&world, IVec3{x - 16, 0, z - 16})
-		}
+
+	h_set := []IVec3{
+		IVec3{1,1,0},
+		IVec3{1,2,0},
+		IVec3{1,3,0},
+		IVec3{1,4,0},
+		IVec3{1,5,0},
+		IVec3{2,3,-1},
+		IVec3{3,1,-2},
+		IVec3{3,2,-2},
+		IVec3{3,3,-2},
+		IVec3{3,4,-2},
+		IVec3{3,5,-2},
 	}
-	flip_voxel(&world, IVec3{-12, 3, -13})
+	for pos in h_set {
+		set_voxel(&world, pos, VoxelKind.Stone)
+	}
+
+	color_map := map[VoxelKind][6]rl.Color{
+		VoxelKind.Dirt = CUBE_COLORS_DIRT,
+		VoxelKind.Stone = CUBE_COLORS_STONE,
+	}
 
 	for !rl.WindowShouldClose() {
 		// game updates
-		if rl.IsKeyPressed(rl.KeyboardKey.SPACE) {
+		if rl.IsKeyDown(rl.KeyboardKey.SPACE) { // was `pressed` for once-action
 			//keys := collect_keys(world.voxels)
 			chunks := collect_keys(world.chunks)
 			desired_chunk := rand.choice(chunks[:])
 			voxels := collect_keys(world.chunks[desired_chunk].voxels)
 			desired_vox := rand.choice(voxels[:])
 			desired_pos := chunk_to_world_coord(desired_chunk, desired_vox)
-			flip_voxel(&world, desired_pos) // evicts mesh
+			set_voxel(&world, desired_pos, VoxelKind.Stone) // evicts mesh
 		}
 		// render
 		rl.BeginDrawing()
-		rl.ClearBackground(rl.Color{60, 0, 20, 255}) // (60, 0, 8)
+		rl.ClearBackground(rl.Color{60, 0, 40, 255}) // (60, 0, 8)
 		/*BEGIN 3D*/ rl.BeginMode3D(camera)
-		for chunk_pos, &chunk in world.chunks {
-			offset := rl.Vector3{f32(chunk_pos.x * CHUNK_SIZE), f32(chunk_pos.y * CHUNK_SIZE), f32(chunk_pos.z * CHUNK_SIZE) }
-			if chunk.model == nil {
-				create_mesh(&chunk)
+		// render around camera
+		camera_chunk, _ := world_to_chunk_coord(vec_to_ivec(camera.position))
+		for y in -CHUNK_GENERATION_RADIUS..<CHUNK_GENERATION_RADIUS {
+			for z in -CHUNK_GENERATION_RADIUS..<CHUNK_GENERATION_RADIUS {
+				for x in -CHUNK_GENERATION_RADIUS..<CHUNK_GENERATION_RADIUS {
+					//c_offset := IVec3{x,y,z}
+					c_pos := IVec3{x = camera_chunk.x + x, y = camera_chunk.y + y, z = camera_chunk.z + z}
+					chunk := get_or_create_chunk(&world, c_pos)
+
+					offset := ivec_to_vec(IVec3{x = c_pos.x * CHUNK_SIZE, y = c_pos.y * CHUNK_SIZE, z = c_pos.z * CHUNK_SIZE})
+					if chunk.model == nil {
+						create_mesh(chunk, color_map)
+					}
+					rl.DrawModel(chunk.model.?, offset, 1.0, rl.WHITE)
+				}
 			}
-			rl.DrawModel(chunk.model.?, offset, 1.0, rl.WHITE)
 		}
+
 		/*END   3D*/ rl.EndMode3D()
+		rl.DrawFPS(10, 10)
 		rl.EndDrawing()
 	}
 }
@@ -100,12 +146,29 @@ get_or_create_chunk :: proc(world: ^World, chunk_position: IVec3) -> (chunk: ^Ch
 	if chunk, ok = &world.chunks[chunk_position]; ok {
 		return
 	}
-	world.chunks[chunk_position] = Chunk { model = nil, voxels = map[IVec3]struct{}{} }
+	world.chunks[chunk_position] = Chunk { model = nil, voxels = map[IVec3]VoxelKind{} }
 	chunk = &world.chunks[chunk_position]
+	for z in 0..<32 {
+		for y in 0..<32 {
+			for x in 0..<32 {
+				world_pos := IVec3{
+					x = chunk_position.x*CHUNK_SIZE + x,
+				 	y = chunk_position.y*CHUNK_SIZE + y,
+					z = chunk_position.z*CHUNK_SIZE + z,
+				}
+
+				if world_pos.y == 0 {
+					chunk.voxels[IVec3{x,y,z}] = VoxelKind.Dirt
+				} else if world_pos.y < 0 {
+					chunk.voxels[IVec3{x,y,z}] = VoxelKind.Stone
+				}
+			}
+		}
+	}
 	return
 }
 
-create_mesh :: proc(chunk: ^Chunk) {
+create_mesh :: proc(chunk: ^Chunk, color_map: map[VoxelKind][6]rl.Color) {
 	mesh := rl.Mesh{}
 	mesh.vertexCount = c.int(24 * len(chunk.voxels))
 	mesh.triangleCount = c.int(12 * len(chunk.voxels))
@@ -121,10 +184,15 @@ create_mesh :: proc(chunk: ^Chunk) {
 	defer delete(colors)
 	defer delete(indices)
 	i := 0
-	for vox in chunk.voxels {
+	for vox, kind in chunk.voxels {
+		c, ok := color_map[kind]
+		if !ok {
+			log.warnf("voxel kind '%v' has no color map", kind)
+			c = CUBE_COLORS_UNKNOWN
+		}
 		gen_cube_vertices(
 			&vertices, &normals, &colors, &indices,
-		 	ivec_to_vec(vox), CUBE_COLORS, i
+		 	ivec_to_vec(vox), c, i
 		)
 		i += 1
 	}
@@ -150,20 +218,20 @@ free_model :: proc(model: ^rl.Model) {
 }
 
 
-flip_voxel :: proc(world: ^World, position: IVec3) {
+set_voxel :: proc(world: ^World, position: IVec3, kind: Maybe(VoxelKind)) {
 	// convert to chunk coords
 	chunk_pos, chunk_local_pos := world_to_chunk_coord(position)
-	//log.infof("%v -> %v, %v", position, chunk_pos, chunk_local_pos)
  	//chunk := &world.chunks[chunk_pos]
 	chunk := get_or_create_chunk(world, chunk_pos)
 	if mod, ok := &chunk.model.?; ok {
 		free_model(mod)
 	}
 	chunk.model = nil
-	if _, ok := chunk.voxels[chunk_local_pos]; ok {
-		delete_key(&chunk.voxels, chunk_local_pos)
+	k, ok := kind.?
+	if !ok {
+		delete_key(&chunk.voxels, chunk_local_pos) // no-op if the key doesn't exist
 	} else {
-		chunk.voxels[chunk_local_pos] = struct{}{}
+		chunk.voxels[chunk_local_pos] = k
 	}
 }
 
