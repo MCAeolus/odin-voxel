@@ -1,5 +1,6 @@
 package main
 
+import "core:math"
 import "core:mem"
 import "core:crypto/_fiat/field_curve448"
 import "base:intrinsics"
@@ -25,6 +26,8 @@ CUBE_COLORS : [6]rl.Color : {
 	rl.Color{150, 200, 200, 255}
 }
 
+CHUNK_SIZE :: 32 // N x N x N chunk
+
 IVec3 :: struct { // discrete vec3
 	x, y, z: int
 }
@@ -37,10 +40,13 @@ ivec_to_vec :: proc(vec: IVec3) -> (out: rl.Vector3) {
 }
 
 World :: struct {
-	voxels: map[IVec3]struct{}, // hash set
-	model: rl.Model
+	chunks: map[IVec3]Chunk,
 }
 
+Chunk :: struct {
+	voxels: map[IVec3]struct{},
+	model: Maybe(rl.Model),
+}
 
 main :: proc() {
 	context.logger = log.create_console_logger()
@@ -61,40 +67,68 @@ main :: proc() {
 	// populate World
 	for z in 0..<32 {
 		for x in 0..<32 {
-			world.voxels[IVec3{x - 16, 0, z - 16}] = struct{}{}
+			flip_voxel(&world, IVec3{x - 16, 0, z - 16})
 		}
 	}
+	flip_voxel(&world, IVec3{-12, 3, -13})
 
 	for !rl.WindowShouldClose() {
 		// game updates
 		if rl.IsKeyPressed(rl.KeyboardKey.SPACE) {
-			keys := collect_keys(world.voxels)
-			delete_key(&world.voxels, rand.choice(keys[:]))
-			world.model = rl.Model{}
+			//keys := collect_keys(world.voxels)
+			chunks := collect_keys(world.chunks)
+			desired_chunk := rand.choice(chunks[:])
+			voxels := collect_keys(world.chunks[desired_chunk].voxels)
+			desired_vox := rand.choice(voxels[:])
+			desired_pos := chunk_to_world_coord(desired_chunk, desired_vox)
+			flip_voxel(&world, desired_pos) // evicts mesh
 		}
 		// render
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.Color{60, 0, 20, 255}) // (60, 0, 8)
 		/*BEGIN 3D*/ rl.BeginMode3D(camera)
-		if (world.model == rl.Model{}) { // default
-			create_mesh(&world)
+		for chunk_pos, &chunk in world.chunks {
+			offset := rl.Vector3{f32(chunk_pos.x * CHUNK_SIZE), f32(chunk_pos.y * CHUNK_SIZE), f32(chunk_pos.z * CHUNK_SIZE) }
+			if chunk.model == nil {
+				create_mesh(&chunk)
+			}
+			rl.DrawModel(chunk.model.?, offset, 1.0, rl.WHITE)
 		}
-		rl.DrawModel(world.model, rl.Vector3(0), 1.0, rl.WHITE)
-		// seg fault here \/
-		//rl.DrawMesh(world.mesh^, rl.LoadMaterialDefault(), rl.Matrix(1))
-		//draw_mesh(world.mesh)
-		//for vox in world.voxels {
-		//	draw_cube_colored(ivec_to_vec(vox), CUBE_COLORS)
-		//}
 		/*END   3D*/ rl.EndMode3D()
 		rl.EndDrawing()
 	}
 }
 
-create_mesh :: proc(world: ^World) {
+chunk_to_world_coord :: proc(chunk_pos: IVec3, chunk_local_pos: IVec3) -> (world_pos: IVec3) {
+	world_pos.x = chunk_pos.x * CHUNK_SIZE + chunk_local_pos.x
+	world_pos.y = chunk_pos.y * CHUNK_SIZE + chunk_local_pos.y
+	world_pos.z = chunk_pos.z * CHUNK_SIZE + chunk_local_pos.z
+	return
+}
+
+world_to_chunk_coord :: proc(world_pos: IVec3) -> (chunk_pos: IVec3, chunk_local_pos: IVec3) {
+	// https://odin-lang.org/docs/overview/#integer-operators
+	// according to this section, integer operations in odin respect
+	// euclidian operations (div/rem)
+	chunk_pos = IVec3{x = math.floor_div(world_pos.x, CHUNK_SIZE), y = math.floor_div(world_pos.y, CHUNK_SIZE), z = math.floor_div(world_pos.z, CHUNK_SIZE)}
+	chunk_local_pos = IVec3{x = world_pos.x %% CHUNK_SIZE, y = world_pos.y %% CHUNK_SIZE, z = world_pos.z %% CHUNK_SIZE}
+	return
+}
+
+get_or_create_chunk :: proc(world: ^World, chunk_position: IVec3) -> (chunk: ^Chunk) {
+	ok: bool
+	if chunk, ok = &world.chunks[chunk_position]; ok {
+		return
+	}
+	world.chunks[chunk_position] = Chunk { model = nil, voxels = map[IVec3]struct{}{} }
+	chunk = &world.chunks[chunk_position]
+	return
+}
+
+create_mesh :: proc(chunk: ^Chunk) {
 	mesh := rl.Mesh{}
-	mesh.vertexCount = c.int(24 * len(world.voxels))
-	mesh.triangleCount = c.int(12 * len(world.voxels))
+	mesh.vertexCount = c.int(24 * len(chunk.voxels))
+	mesh.triangleCount = c.int(12 * len(chunk.voxels))
 	//mesh.vertices = cast([^]f32) rl.MemAlloc(c.uint(mesh.vertexCount * 3 * size_of(f32)))
 	//mesh.normals = cast([^]f32) rl.MemAlloc(c.uint(mesh.vertexCount * 3 * size_of(f32)))
 	//mesh.colors = cast([^]u8) rl.MemAlloc(c.uint(mesh.vertexCount * 4 * size_of(u8)))
@@ -107,7 +141,7 @@ create_mesh :: proc(world: ^World) {
 	defer delete(colors)
 	defer delete(indices)
 	i := 0
-	for vox in world.voxels {
+	for vox in chunk.voxels {
 		gen_cube_vertices(
 			&vertices, &normals, &colors, &indices,
 		 	ivec_to_vec(vox), CUBE_COLORS, i
@@ -128,10 +162,30 @@ create_mesh :: proc(world: ^World) {
 	//mesh.colors = raw_data(colors)
 	//mesh.indices = raw_data(indices)
 	rl.UploadMesh(&mesh, false)
-
-	world.model = rl.LoadModelFromMesh(mesh)
+	chunk.model = rl.LoadModelFromMesh(mesh)
 }
 
+free_model :: proc(model: ^rl.Model) {
+	rl.UnloadModel(model^)
+}
+
+
+flip_voxel :: proc(world: ^World, position: IVec3) {
+	// convert to chunk coords
+	chunk_pos, chunk_local_pos := world_to_chunk_coord(position)
+	//log.infof("%v -> %v, %v", position, chunk_pos, chunk_local_pos)
+ 	//chunk := &world.chunks[chunk_pos]
+	chunk := get_or_create_chunk(world, chunk_pos)
+	if mod, ok := &chunk.model.?; ok {
+		free_model(mod)
+	}
+	chunk.model = nil
+	if _, ok := chunk.voxels[chunk_local_pos]; ok {
+		delete_key(&chunk.voxels, chunk_local_pos)
+	} else {
+		chunk.voxels[chunk_local_pos] = struct{}{}
+	}
+}
 
 // call within a draw call
 draw_cube :: proc(position: rl.Vector3) {

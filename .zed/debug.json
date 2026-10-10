@@ -1,0 +1,14 @@
+[
+  {
+    "adapter": "CodeLLDB",
+    "label": "Debug Odin Program",
+    "request": "launch",
+    "program": "$ZED_WORKTREE_ROOT/main_debug",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "build": {
+      "command": "odin",
+      "args": ["build", "src/", "-out:main_debug", "-file", "-debug"],
+      "cwd": "$ZED_WORKTREE_ROOT"
+    }
+  },
+]
