@@ -19,21 +19,21 @@ WINDOW_HEIGHT : c.int : 600
 TARGET_FPS :: 60
 
 CUBE_COLORS_DIRT : [6]rl.Color : {
+	rl.Color{140, 42, 42, 255},
+	rl.Color{140, 42, 42, 255},
 	rl.Color{160, 42, 42, 255},
 	rl.Color{160, 42, 42, 255},
-	rl.Color{160, 42, 42, 255},
-	rl.Color{160, 42, 42, 255},
-	rl.Color{160, 42, 42, 255},
-	rl.Color{160, 42, 42, 255},
+	rl.Color{140, 42, 42, 255},
+	rl.Color{140, 42, 42, 255},
 }
 
 CUBE_COLORS_STONE : [6]rl.Color : {
+	rl.Color{118, 128, 128, 255},
+	rl.Color{118, 128, 128, 255},
 	rl.Color{128, 128, 128, 255},
 	rl.Color{128, 128, 128, 255},
-	rl.Color{128, 128, 128, 255},
-	rl.Color{128, 128, 128, 255},
-	rl.Color{128, 128, 128, 255},
-	rl.Color{128, 128, 128, 255},
+	rl.Color{118, 128, 128, 255},
+	rl.Color{118, 128, 128, 255},
 }
 
 CUBE_COLORS_UNKNOWN : [6]rl.Color : {
@@ -58,11 +58,12 @@ World :: struct {
 }
 
 Chunk :: struct {
-	voxels: map[IVec3]VoxelKind, // absence is 'air'
+	voxels: [32][32][32]VoxelKind, // absence is 'air'
 	model: Maybe(rl.Model),
 }
 
 VoxelKind :: enum {
+	Air,
 	Dirt,
 	Stone,
 }
@@ -89,10 +90,10 @@ main :: proc() {
 			fovy = 60,
 			up = rl.Vector3{0, 1, 0},
 			target = rl.Vector3{1,1.6,0},
-			position = rl.Vector3{0,1.6,0},
+			position = rl.Vector3{0.4,1.6,0},
 			projection = rl.CameraProjection.PERSPECTIVE,
 		},
-		bounding_box = rl.BoundingBox{rl.Vector3(0), rl.Vector3{0.8, 1.8, 0.8}},
+		bounding_box = rl.BoundingBox{rl.Vector3(0), rl.Vector3{0.8, 1.8, 0.6}},
 	}
 
 	color_map := map[VoxelKind][6]rl.Color{
@@ -109,7 +110,7 @@ main :: proc() {
 		now := rl.GetTime()
 		dt := now - lt
 		lt = now
-		update_player(&player, dt) // handles movement, camera
+		update_player(&player, &world, dt) // handles movement, camera
 
 		// raycast placement/deletion
 		target, face, ray_ok := raycast_voxel(&world, player.camera.position, player.direction, 3)
@@ -145,9 +146,12 @@ main :: proc() {
 			}
 		}
 		if ray_ok {
-			rl.DrawCube(ivec_to_vec(target), 1.01, 1.01, 1.01, rl.Color{255, 255, 255, 10})
+			rl.DrawCube(rl.Vector3(target), 1.01, 1.01, 1.01, rl.Color{255, 255, 255, 10})
 			rl.DrawLine3D(rl.Vector3(target), rl.Vector3(target) + face, rl.GREEN)
+			rl.DrawLine3D(rl.Vector3(player.camera.position), rl.Vector3(target) + face, rl.SKYBLUE)
 		}
+		shifted_box := rl.BoundingBox{player.bounding_box.min + player.position, player.bounding_box.max + player.position}
+		rl.DrawBoundingBox(shifted_box, rl.YELLOW)
 
 		/*END   3D*/ rl.EndMode3D()
 		rl.DrawFPS(10, 10)
@@ -161,7 +165,7 @@ get_or_create_chunk :: proc(world: ^World, chunk_position: IVec3) -> (chunk: ^Ch
 	if chunk, ok = &world.chunks[chunk_position]; ok {
 		return
 	}
-	world.chunks[chunk_position] = Chunk { model = nil, voxels = map[IVec3]VoxelKind{} }
+	world.chunks[chunk_position] = Chunk { }
 	chunk = &world.chunks[chunk_position]
 	for z in 0..<32 {
 		for y in 0..<32 {
@@ -173,9 +177,9 @@ get_or_create_chunk :: proc(world: ^World, chunk_position: IVec3) -> (chunk: ^Ch
 				}
 
 				if world_pos.y == 0 {
-					chunk.voxels[IVec3{x,y,z}] = VoxelKind.Dirt
-				} else if world_pos.y < 0 {
-					chunk.voxels[IVec3{x,y,z}] = VoxelKind.Stone
+					chunk.voxels[x][y][z] = VoxelKind.Dirt
+				} else if world_pos.y == -1 {
+					chunk.voxels[x][y][z] = VoxelKind.Stone
 				}
 			}
 		}
@@ -184,13 +188,13 @@ get_or_create_chunk :: proc(world: ^World, chunk_position: IVec3) -> (chunk: ^Ch
 }
 
 create_mesh :: proc(chunk: ^Chunk, color_map: map[VoxelKind][6]rl.Color) {
-	neighbors := []rl.Vector3{
-		rl.Vector3{1, 0, 0}, // Right
-		rl.Vector3{-1, 0, 0}, // Left
-		rl.Vector3{0, 1, 0}, // Up
-		rl.Vector3{0, -1, 0}, // Down
-		rl.Vector3{0, 0, 1}, // Forward
-		rl.Vector3{0, 0, -1}, // Backward
+	neighbors := []IVec3{
+		IVec3{1, 0, 0}, // Right
+		IVec3{-1, 0, 0}, // Left
+		IVec3{0, 1, 0}, // Up
+		IVec3{0, -1, 0}, // Down
+		IVec3{0, 0, 1}, // Forward
+		IVec3{0, 0, -1}, // Backward
 	}
 	mesh := rl.Mesh{}
 	vertices := make([dynamic]f32)
@@ -203,28 +207,37 @@ create_mesh :: proc(chunk: ^Chunk, color_map: map[VoxelKind][6]rl.Color) {
 	defer delete(buffers.colors)
 	defer delete(buffers.indices)
 	//i := 0
-	for vox, kind in chunk.voxels {
-		c, ok := color_map[kind]
-		if !ok {
-			log.warnf("voxel kind '%v' has no color map", kind)
-			c = CUBE_COLORS_UNKNOWN
-		}
-		i := 0
-		for offset in neighbors {
-			neighbor := vox + IVec3(offset)
-			_, present := chunk.voxels[neighbor]
-			if present { // face is blocked
-				continue
+
+	for x, ix in chunk.voxels {
+		for y, iy in x {
+			for kind, iz in y {
+				if kind == VoxelKind.Air {
+					continue
+				}
+				c, ok := color_map[kind]
+				if !ok {
+					log.warnf("voxel kind '%v' has no color map", kind)
+					c = CUBE_COLORS_UNKNOWN
+				}
+				i := 0
+				for offset in neighbors {
+					neighbor := IVec3{ix + offset.x, iy + offset.y, iz + offset.z}
+					oob := neighbor.x < 0 || neighbor.x >= 32 || neighbor.y < 0 || neighbor.y >= 32 || neighbor.z < 0 || neighbor.z >= 32
+					if !oob && chunk.voxels[neighbor.x][neighbor.y][neighbor.z] != VoxelKind.Air { // face is blocked
+						continue
+					}
+					gen_quad_vertices(
+						&buffers,
+					 	rl.Vector3{f32(ix), f32(iy), f32(iz)},
+						rl.Vector3(offset),
+						c[i],
+					)
+					i += 1
+				}
 			}
-			gen_quad_vertices(
-				&buffers,
-			 	ivec_to_vec(vox),
-				offset,
-				c[i],
-			)
-			i += 1
 		}
 	}
+
 	mesh.vertices = cast([^]f32) rl.MemAlloc(u32(len(buffers.vertices) * size_of(f32)))
 	mesh.normals = cast([^]f32) rl.MemAlloc(u32(len(buffers.normals) * size_of(f32)))
 	mesh.colors = cast([^]u8) rl.MemAlloc(u32(len(buffers.colors) * size_of(u8)))
@@ -244,19 +257,15 @@ free_model :: proc(model: ^rl.Model) {
 	rl.UnloadModel(model^)
 }
 
-get_voxel :: proc(world: ^World, position: IVec3) -> Maybe(VoxelKind) {
+get_voxel :: proc(world: ^World, position: IVec3) -> VoxelKind {
 	// convert to chunk coords
 	chunk_pos, chunk_local_pos := world_to_chunk_coord(position)
 	//chunk := &world.chunks[chunk_pos]
 	chunk := get_or_create_chunk(world, chunk_pos)
-	val, ok := chunk.voxels[chunk_local_pos]
-	if ok {
-		return val
-	}
-	return nil
+	return chunk.voxels[chunk_local_pos.x][chunk_local_pos.y][chunk_local_pos.z]
 }
 
-set_voxel :: proc(world: ^World, position: IVec3, kind: Maybe(VoxelKind)) {
+set_voxel :: proc(world: ^World, position: IVec3, kind: VoxelKind) {
 	// convert to chunk coords
 	chunk_pos, chunk_local_pos := world_to_chunk_coord(position)
  	//chunk := &world.chunks[chunk_pos]
@@ -264,13 +273,12 @@ set_voxel :: proc(world: ^World, position: IVec3, kind: Maybe(VoxelKind)) {
 	if mod, ok := &chunk.model.?; ok {
 		free_model(mod)
 	}
-	chunk.model = nil // this should be optimized to not be unconditional
-	k, ok := kind.?
-	if !ok {
-		delete_key(&chunk.voxels, chunk_local_pos) // no-op if the key doesn't exist
-	} else {
-		chunk.voxels[chunk_local_pos] = k
+	o_kind := chunk.voxels[chunk_local_pos.x][chunk_local_pos.y][chunk_local_pos.z]
+	if kind == o_kind {
+		return
 	}
+	chunk.model = nil // this should be optimized to not be unconditional
+	chunk.voxels[chunk_local_pos.x][chunk_local_pos.y][chunk_local_pos.z] = kind
 }
 
 // call within a draw call
