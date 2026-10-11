@@ -81,31 +81,18 @@ main :: proc() {
 	defer rl.CloseWindow()
 	rl.SetTargetFPS(TARGET_FPS)
 
-	camera := rl.Camera3D{
-		position = rl.Vector3{0, 2, 10},
-		target = rl.Vector3{0, 2, 0},
-		up = rl.Vector3{0, 1, 0},
-		fovy = 60,
-		projection = rl.CameraProjection.PERSPECTIVE,
-	}
-
 	world := World{}
-
-	h_set := []IVec3{
-		IVec3{1,1,0},
-		IVec3{1,2,0},
-		IVec3{1,3,0},
-		IVec3{1,4,0},
-		IVec3{1,5,0},
-		IVec3{2,3,-1},
-		IVec3{3,1,-2},
-		IVec3{3,2,-2},
-		IVec3{3,3,-2},
-		IVec3{3,4,-2},
-		IVec3{3,5,-2},
-	}
-	for pos in h_set {
-		set_voxel(&world, pos, VoxelKind.Stone)
+	player := PlayerController{
+		position = rl.Vector3{0, 0, 0}, // at feet
+		direction = rl.Vector3{1, 0, 0}, // facing forward, x-axis
+		camera = rl.Camera3D{
+			fovy = 60,
+			up = rl.Vector3{0, 1, 0},
+			target = rl.Vector3{1,1.6,0},
+			position = rl.Vector3{0,1.6,0},
+			projection = rl.CameraProjection.PERSPECTIVE,
+		},
+		bounding_box = rl.BoundingBox{rl.Vector3(0), rl.Vector3{0.8, 1.8, 0.8}},
 	}
 
 	color_map := map[VoxelKind][6]rl.Color{
@@ -113,11 +100,19 @@ main :: proc() {
 		VoxelKind.Stone = CUBE_COLORS_STONE,
 	}
 
+	set_voxel(&world, IVec3{1, 0, 1}, VoxelKind.Stone)
+
 	rl.DisableCursor()
+	lt := rl.GetTime()
 	for !rl.WindowShouldClose() {
 		// game updates
-		rl.UpdateCamera(&camera, rl.CameraMode.FREE)
-		target, face, ray_ok := raycast_voxel(&world, camera.position, linalg.normalize(camera.target - camera.position), 3)
+		now := rl.GetTime()
+		dt := now - lt
+		lt = now
+		update_player(&player, dt) // handles movement, camera
+
+		// raycast placement/deletion
+		target, face, ray_ok := raycast_voxel(&world, player.camera.position, player.direction, 3)
 		if rl.IsMouseButtonPressed(rl.MouseButton.LEFT) { // was `pressed` for once-action
 			if ray_ok {
 				set_voxel(&world, IVec3(target), nil)
@@ -127,17 +122,18 @@ main :: proc() {
 				set_voxel(&world, IVec3(rl.Vector3(target)+face), VoxelKind.Stone)
 			}
 		}
+
 		// render
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.Color{60, 0, 40, 255}) // (60, 0, 8)
-		/*BEGIN 3D*/ rl.BeginMode3D(camera)
+		/*BEGIN 3D*/ rl.BeginMode3D(player.camera)
 		// render around camera
-		camera_chunk, _ := world_to_chunk_coord(vec_to_ivec(camera.position))
+		player_chunk, _ := world_to_chunk_coord(vec_to_ivec(player.position))
 		for y in -CHUNK_GENERATION_RADIUS..<CHUNK_GENERATION_RADIUS {
 			for z in -CHUNK_GENERATION_RADIUS..<CHUNK_GENERATION_RADIUS {
 				for x in -CHUNK_GENERATION_RADIUS..<CHUNK_GENERATION_RADIUS {
 					//c_offset := IVec3{x,y,z}
-					c_pos := IVec3{camera_chunk.x + x, camera_chunk.y + y, camera_chunk.z + z}
+					c_pos := IVec3{player_chunk.x + x, player_chunk.y + y, player_chunk.z + z}
 					chunk := get_or_create_chunk(&world, c_pos)
 
 					offset := ivec_to_vec(IVec3{c_pos.x * CHUNK_SIZE, c_pos.y * CHUNK_SIZE, c_pos.z * CHUNK_SIZE})
@@ -149,7 +145,7 @@ main :: proc() {
 			}
 		}
 		if ray_ok {
-			rl.DrawCube(ivec_to_vec(target), 1, 1, 1, rl.Color{255, 255, 255, 10})
+			rl.DrawCube(ivec_to_vec(target), 1.01, 1.01, 1.01, rl.Color{255, 255, 255, 10})
 			rl.DrawLine3D(rl.Vector3(target), rl.Vector3(target) + face, rl.GREEN)
 		}
 

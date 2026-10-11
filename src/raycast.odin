@@ -21,10 +21,8 @@ raycast_voxel :: proc(world: ^World, start: rl.Vector3, direction: rl.Vector3, m
 
 	for dist < max_dist {
 		if vox := get_voxel(world, pos); vox != nil { // hit a boundary
-			log.infof("hit %v, traveled %v, saw %v", pos, dist, vox)
 			return pos, -linalg.normalize(last_move), true
 		}
-		log.infof("%v, -- %v, -- %v", t_max, pos, dist)
 
 		if t_max.x < t_max.y && t_max.x < t_max.z { // stepping in an axis based on smallest t_max
 			pos.x += step_dir.x
