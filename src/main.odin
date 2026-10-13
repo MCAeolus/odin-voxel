@@ -13,8 +13,8 @@ import rl "vendor:raylib"
 import rlgl "vendor:raylib/rlgl"
 
 
-WINDOW_WIDTH : c.int : 800
-WINDOW_HEIGHT : c.int : 600
+WINDOW_WIDTH : c.int : 1000 //800
+WINDOW_HEIGHT : c.int : 750 //600
 
 TARGET_FPS :: 60
 
@@ -84,16 +84,16 @@ main :: proc() {
 
 	world := World{}
 	player := PlayerController{
-		position = rl.Vector3{0, 0, 0}, // at feet
+		position = rl.Vector3{0, 1, 0}, // at feet
 		direction = rl.Vector3{1, 0, 0}, // facing forward, x-axis
 		camera = rl.Camera3D{
 			fovy = 60,
 			up = rl.Vector3{0, 1, 0},
 			target = rl.Vector3{1,1.6,0},
-			position = rl.Vector3{0.4,1.6,0},
+			position = rl.Vector3{0,1.6,0},
 			projection = rl.CameraProjection.PERSPECTIVE,
 		},
-		bounding_box = rl.BoundingBox{rl.Vector3(0), rl.Vector3{0.8, 1.8, 0.6}},
+		bounding_box = rl.BoundingBox{rl.Vector3{-0.3, 0, -0.3}, rl.Vector3{0.3, 1.8, 0.3}},
 	}
 
 	color_map := map[VoxelKind][6]rl.Color{
@@ -146,9 +146,9 @@ main :: proc() {
 			}
 		}
 		if ray_ok {
-			rl.DrawCube(rl.Vector3(target), 1.01, 1.01, 1.01, rl.Color{255, 255, 255, 10})
-			rl.DrawLine3D(rl.Vector3(target), rl.Vector3(target) + face, rl.GREEN)
-			rl.DrawLine3D(rl.Vector3(player.camera.position), rl.Vector3(target) + face, rl.SKYBLUE)
+			rl.DrawCube(rl.Vector3(target) + 0.5, 1.01, 1.01, 1.01, rl.Color{255, 255, 255, 10})
+			rl.DrawLine3D(rl.Vector3(target) + 0.5, rl.Vector3(target) + face + 0.5, rl.GREEN)
+			rl.DrawLine3D(rl.Vector3(player.camera.position), rl.Vector3(target)+ 0.5 + face, rl.SKYBLUE)
 		}
 		shifted_box := rl.BoundingBox{player.bounding_box.min + player.position, player.bounding_box.max + player.position}
 		rl.DrawBoundingBox(shifted_box, rl.YELLOW)
@@ -301,7 +301,8 @@ gen_quad_vertices :: proc(render_buffers: ^RenderBuffers, position: rl.Vector3, 
 	}
 	r := linalg.normalize(linalg.cross(nml, ref)) * 0.5
 	u := linalg.normalize(linalg.cross(nml, r)) * 0.5
-	center := position + nml * 0.5 // center of quad face
+	center := position + rl.Vector3{0.5,0.5,0.5} + nml * 0.5 // center of quad face
+	// 0.5 offset so block edges are on integer bounds [x, x+1], [y, y+1], etc..
 	p1 := center - r - u
 	append(&render_buffers.vertices, p1.x, p1.y, p1.z)
 	p2 := center + r - u
